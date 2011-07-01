@@ -1,0 +1,4 @@
+cache/thumbnails/*
+!cache/thumbnails/README
+cache/graphite/*
+!cache/graphite/README
