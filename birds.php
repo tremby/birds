@@ -37,6 +37,8 @@ $ns = array(
 	"bbc" => "http://www.bbc.co.uk/",
 );
 
+define("ENDPOINT_LINKEDGEODATA", "http://linkedgeodata.org/sparql/");
+
 $cachedir = "cache/graphite";
 
 $graph = new Graphite($ns);
@@ -167,6 +169,18 @@ if ($triples < 1)
 $sensor = $graph->allOfType("ssn:Observation")->get("ssn:observedBy")->distinct()->current();
 if ($sensor->isNull())
 	die("no observations");
+$sensorURI = $sensor->uri;
+
+// get sensor coordinates
+if ($graph->load($sensorURI) == 0)
+	die("couldn't load sensor RDF");
+$location = $graph->resource($sensorURI)->get("ssn:hasDeployment")->get("ssn:deployedOnPlatform")->get("sw:hasLocation");
+if ($location->isNull())
+	die("couldn't get sensor coordinates");
+$coords = array(
+	floatVal((string) $location->get("sw:coordinate2")->get("sw:hasNumericValue")),
+	floatVal((string) $location->get("sw:coordinate1")->get("sw:hasNumericValue")),
+);
 
 // collect times and heights
 $tideobservations = array();
@@ -236,6 +250,209 @@ if ($currentheight < $lowthreshold) {
 	$lowerbirds = $lowbirds->union($midbirds)->except($currentbirds);
 }
 
+$types_pub = array(
+	"lgdo:Pub",
+	"lgdo:Bar",
+);
+$types_cafe = array(
+	"lgdo:CoffeeShop",
+	"lgdo:Cafe",
+	"lgdo:InternetCafe",
+);
+$types_food = array(
+	"lgdo:Restaurant",
+	"lgdo:FastFood",
+	"lgdo:Barbeque",
+	"lgdo:IceCream",
+);
+$types_store = array(
+	"lgdo:Shops",
+	"lgdo:Shop",
+	"lgdo:Shopping",
+	"lgdo:Supermarket",
+	"lgdo:Bakery",
+	"lgdo:Marketplace",
+	"lgdo:PublicMarket",
+	"lgdo:TakeAway",
+	"lgdo:DrinkingWater",
+	"lgdo:WaterFountain",
+	"lgdo:WaterWell",
+);
+$types_parking = array(
+	"lgdo:Parking",
+	"lgdo:MotorcycleParking",
+	"lgdo:BicycleParking",
+);
+$pubbar = nearbyamenities($types_pub, $coords, 3);
+$cafe = nearbyamenities($types_cafe, $coords, 3);
+$restaurant = nearbyamenities($types_food, $coords, 3);
+$shop = nearbyamenities($types_store, $coords, 3);
+$parking = nearbyamenities($types_parking, $coords, 3);
+function amenitylist($amenities) {
+	global $coords;
+	if (is_null($amenities) || count($amenities) == 0) { ?>
+		<p>Nothing found nearby</p>
+		<?php
+		return;
+	}
+	?>
+	<ul>
+		<?php foreach ($amenities as $uri => $amenity) { ?>
+			<li>
+				<?php echo htmlspecialchars($amenity[0]); ?>
+				<span class="hint">(<?php echo sprintf("%.01f", distance($coords, $amenity[1])); ?>km)</span>
+				<a class="uri" href="<?php echo htmlspecialchars($uri); ?>"></a>
+			</li>
+		<?php } ?>
+	</ul>
+	<?php
+}
+// query linkedgeodata.org for nearby amenities
+function nearbyamenities($type, $latlon, $radius = 10) {
+	global $ns;
+
+	// upgrade $type to an array of itself if an array wasn't given
+	if (!is_array($type))
+		$type = array($type);
+
+	// execute query
+	$rows = sparqlquery(ENDPOINT_LINKEDGEODATA, "
+		SELECT *
+		WHERE {
+			{ ?place a " . implode(" . } UNION { ?place a ", $type) . " . }
+			?place
+				a ?type ;
+				geo:geometry ?placegeo ;
+				rdfs:label ?placename .
+			FILTER(<bif:st_intersects> (?placegeo, <bif:st_point> ($latlon[1], $latlon[0]), $radius)) .
+		}
+	");
+
+	// collect results
+	$results = array();
+	foreach ($rows as $row) {
+		$coords = parsepointstring($row['placegeo']);
+		$results[$row["place"]] = array($row['placename'], $coords, distance($coords, $latlon));
+	}
+
+	// sort according to ascending distance from centre
+	uasort($results, "sortbythirdelement");
+
+	return $results;
+}
+function sortbythirdelement($a, $b) {
+	$diff = $a[2] - $b[2];
+	// usort needs integers, floats aren't good enough
+	return $diff < 0 ? -1 : ($diff > 0 ? 1 : 0);
+}
+
+// return results of a Sparql query
+// maxage is the number of seconds old an acceptable cached result can be 
+// (default one day, 0 means it must be collected newly. false means must be 
+// collected newly and the result will not be stored. true means use cached 
+// result however old it is)
+// type is passed straight through to Arc
+// missing prefixes are added
+function sparqlquery($endpoint, $query, $type = "rows", $maxage = 86400/*1 day*/) {
+	$cachedir = "cache/sparql/" . md5($endpoint);
+
+	if (!is_dir($cachedir))
+		mkdir($cachedir) or die("couldn't make cache directory");
+
+	$query = addmissingprefixes($query);
+
+	$cachefile = $cachedir . "/" . md5($query . $type);
+
+	// collect from cache if available and recent enough
+	if ($maxage === true && file_exists($cachefile) || $maxage !== false && $maxage > 0 && file_exists($cachefile) && time() < filemtime($cachefile) + $maxage)
+		return unserialize(file_get_contents($cachefile));
+
+	// cache is not to be used or cached file is out of date. query endpoint
+	$config = array(
+		"remote_store_endpoint" => $endpoint,
+		"reader_timeout" => 120,
+		"ns" => $GLOBALS["ns"],
+	);
+	$store = ARC2::getRemoteStore($config);
+	$result = $store->query($query, $type);
+	if (!empty($store->errors)) {
+		foreach ($store->errors as $error)
+			trigger_error("Sparql error: " . $error, E_USER_WARNING);
+		return null;
+	}
+
+	// store result unless caching is switched off
+	if ($maxage !== false)
+		file_put_contents($cachefile, serialize($result));
+
+	return $result;
+}
+
+// return a Sparql PREFIX string, given a namespace key from the global $ns 
+// array, or many such PREFIX strings for an array of such keys
+function prefix($n = null) {
+	global $ns;
+	if (is_null($n))
+		$n = array_keys($ns);
+	if (!is_array($n))
+		$n = array($n);
+	$ret = "";
+	foreach ($n as $s)
+		$ret .= "PREFIX $s: <" . $ns[$s] . ">\n";
+	return $ret;
+}
+
+// parse a string
+// 	POINT(longitude latitude)
+// and return
+// 	array(float latitude, float longitude)
+function parsepointstring($string) {
+	$coords = array_map("floatVal", explode(" ", preg_replace('%^.*\((.*)\)$%', '\1', $string)));
+	return array_reverse($coords);
+}
+
+// return the distance in km between two array(lat, lon)
+function distance($latlon1, $latlon2) {
+	$angle = acos(sin(deg2rad($latlon1[0])) * sin(deg2rad($latlon2[0])) + cos(deg2rad($latlon1[0])) * cos(deg2rad($latlon2[0])) * cos(deg2rad($latlon1[1] - $latlon2[1])));
+	$earthradius_km = 6372.8;
+	return $earthradius_km * $angle;
+}
+
+// add missing PREFIX declarations to a Sparql query
+function addmissingprefixes($query) {
+	global $ns;
+
+	// find existing prefix lines
+	preg_match_all('%^\s*PREFIX\s+(.*?):\s*<.*>\s*$%m', $query, $matches);
+	$existing = $matches[1];
+
+	// get query without prefix declarations
+	$queryonly = $query;
+	if (count($existing)) {
+		if (strpos($query, "\nPREFIX") !== false)
+			$queryonly = substr($query, strlen($query) - strpos(strrev($query), strrev("\nPREFIX")));
+		$queryonly = preg_replace('%^[^\n]*\n%', "", $queryonly);
+	}
+
+	// find namespaces used in query
+	preg_match_all('%(?:^|[\s,;])([^\s:<]*):%m', $queryonly, $matches);
+	$used = array_unique($matches[1]);
+
+	// list of namespaces to add
+	$add = array();
+	foreach ($used as $short) {
+		if (in_array($short, $existing))
+			continue;
+		if (!in_array($short, array_keys($ns)))
+			trigger_error("Namespace '$short' used in Sparql query not found in global namespaces array", E_USER_WARNING);
+		else
+			$add[] = $short;
+	}
+
+	$query = prefix($add) . $query;
+	return $query;
+}
+
 ?>
 <!DOCTYPE HTML>
 <html>
@@ -243,6 +460,8 @@ if ($currentheight < $lowthreshold) {
 	<title>Birdwatching mashup</title>
 	<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.6.1/jquery.min.js"></script>
 	<script type="text/javascript" src="flot/jquery.flot.min.js"></script>
+	<script type="text/javascript" src="fancybox/jquery.fancybox-1.3.1.pack.js"></script>
+	<link rel="stylesheet" href="fancybox/jquery.fancybox-1.3.1.css" media="screen" type="text/css">
 	<script type="text/javascript">
 		$(document).ready(function() {
 			// slidey definition lists
@@ -266,15 +485,8 @@ if ($currentheight < $lowthreshold) {
 			$("dl.single > dt:first-child .expandlink").removeClass("expandlink").addClass("collapselink");
 			$("dl.single > dt a.expandlink, dl.single > dt a.collapselink").click(expandcollapsedl);
 
-			// link the bird list
-			choosebird = function(id) {
-				if (typeof(id) != "string")
-					var id = $(this).attr("id").split("_")[1];
-				$("#birdinfo > div").hide();
-				$("#birdinfo_" + id).show();
-			};
-			$("#birdlist li").click(choosebird);
-			choosebird("start");
+			// fancyboxes
+			$("a.fancybox").fancybox();
 		});
 	</script>
 	<style type="text/css">
@@ -289,26 +501,18 @@ if ($currentheight < $lowthreshold) {
 			font-family: sans-serif;
 			font-size: 10pt;
 		}
-		.contentarea {
-			position: absolute;
-			background-color: #333;
-			overflow-y: auto;
-			overflow-x: hidden;
+		body .hidden {
+			display: none;
 		}
-		#graphpane {
-			top: 3em;
-			bottom: 61%;
-			width: 100%;
+		.contentarea {
+			background-color: #333;
+			margin: 0.5em;
+			padding: 0.5em;
 		}
 		#birdlist {
-			bottom: 0;
-			width: 25%;
-			height: 60%;
 		}
-		#infopane {
-			bottom: 0;
-			right: 0;
-			width: 74%;
+		#birdinfo {
+			width: 70%;
 			height: 60%;
 		}
 		#graph {
@@ -324,11 +528,10 @@ if ($currentheight < $lowthreshold) {
 			margin: 0;
 			padding: 0;
 		}
-		#birdlist ul {
-			margin: 0 0 0 1.5em;
-		}
 		#birdlist li {
-			margin: 0.5em 0;
+			display: inline-block;
+			margin: 0.5em;
+			text-align: center;
 		}
 		#birdlist dd {
 			margin-left: 1em;
@@ -355,6 +558,11 @@ if ($currentheight < $lowthreshold) {
 		}
 		a {
 			color: #aca;
+			text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.5);
+			text-decoration: none;
+		}
+		a:hover {
+			text-decoration: underline;
 		}
 		.expandlink, .collapselink {
 			padding-left: 16px;
@@ -367,94 +575,22 @@ if ($currentheight < $lowthreshold) {
 		.collapselink {
 			background-image: url("images/bullet_toggle_minus.png");
 		}
-		.pad {
-			padding: 0.5em;
+		h1 {
+			text-align: center;
 		}
-		#birdlist li:hover {
-			cursor: pointer;
-			color: #aca;
-			text-decoration: underline;
+		img {
+			-moz-box-shadow: 3px 3px 15px -5px #000;
+			border: 0;
+		}
+		#fancybox-outer {
+			background-color: #111;
 		}
 	</style>
 </head>
 <body>
-<div class="contentarea" id="birdlist">
-	<div class="pad">
-		<dl class="single">
-			<?php
-			function birdlist($birds) {
-				?>
-				<ul>
-				<?php foreach ($birds as $bird) { ?>
-					<?php
-					// make thumbnail for bird if we haven't already
-					$imageurl = $bird->get("foaf:depiction");
-					if (!$imageurl->isNull()) {
-						if (!file_exists("cache/thumbnails/" . md5($imageurl) . ".jpg")) {
-							$img = new Imagick();
-							$file = fopen((string) $imageurl, "rb");
-							$img->readImageFile($file);
-							fclose($file);
-							$img->resizeImage(0, 96, Imagick::FILTER_LANCZOS, 1);
-							$img->writeImage("cache/thumbnails/" . md5($imageurl) . ".jpg");
-							$img->destroy();
-						}
-					}
-					?>
-					<li id="birdlist_<?php echo md5($bird); ?>">
-						<h3><?php echo htmlspecialchars($bird->label()); ?></h3>
-						<?php if (!$imageurl->isNull()) { ?>
-							<img src="cache/thumbnails/<?php echo md5($imageurl); ?>.jpg" alt="<?php echo htmlspecialchars($bird->label()); ?>">
-						<?php } ?>
-					</li>
-				<?php } ?>
-				</ul>
-				<?php
-			}
-			?>
-			<dt>Birds common in current conditions</dt>
-			<dd>
-				<p class="hint">These birds are resident in the <?php echo $currentlevel; ?>-tide conditions currently found in the area</p>
-				<?php birdlist($currentbirds); ?>
-			</dd>
-			<?php if (!is_null($higherbirds)) { ?>
-				<dt>Birds you may additionally see if the tide gets higher</dt>
-				<dd>
-					<p class="hint">These additional birds may appear if the tide level increases</p>
-					<?php birdlist($higherbirds); ?>
-				</dd>
-			<?php } ?>
-			<?php if (!is_null($lowerbirds)) { ?>
-				<dt>Birds you may additionally see if the tide gets lower</dt>
-				<dd>
-					<p class="hint">These additional birds may appear if the tide level decreases</p>
-					<?php birdlist($lowerbirds); ?>
-				</dd>
-			<?php } ?>
-		</dl>
-	</div>
-</div>
-<div class="contentarea" id="infopane">
-	<div class="pad">
-		<div id="birdinfo">
-			<div id="birdinfo_start">
-				<h2>Welcome to the birdwatching mashup</h2>
-				<p>Some birds you may see in the area are listed in the panel on the left under various categories.</p>
-				<p>Click a species to see information about it.</p>
-			</div>
-			<?php foreach ($allbirds as $bird) { ?>
-				<div id="birdinfo_<?php echo md5($bird); ?>">
-					<h2>
-						<?php echo htmlspecialchars($bird->label()); ?>
-						<a class="uri" href="<?php echo $bird; ?>"></a>
-					</h2>
-					<?php echo $bird->dump(); ?>
-				</div>
-			<?php } ?>
-		</div>
-	</div>
-</div>
+<h1>Birdwatching mashup</h1>
 <div class="contentarea" id="graphpane">
+	<h2>Tide height</h2>
 	<div class="pad">
 		<div id="graph"></div>
 		<div id="graph_legend"></div>
@@ -508,6 +644,109 @@ if ($currentheight < $lowthreshold) {
 			});
 		</script>
 	</div>
+</div>
+
+<div class="contentarea" id="birdlist">
+	<h2>Birds</h2>
+	<dl class="single">
+		<?php
+		function birdlist($birds) {
+			?>
+			<ul>
+			<?php foreach ($birds as $bird) { ?>
+				<?php
+				// make thumbnail for bird if we haven't already
+				$imageurl = $bird->get("foaf:depiction");
+				if (!$imageurl->isNull()) {
+					if (!file_exists("cache/thumbnails/" . md5($imageurl) . ".jpg")) {
+						$img = new Imagick();
+						$file = fopen((string) $imageurl, "rb");
+						$img->readImageFile($file);
+						fclose($file);
+						$img->resizeImage(0, 96, Imagick::FILTER_LANCZOS, 1);
+						$img->writeImage("cache/thumbnails/" . md5($imageurl) . ".jpg");
+						$img->destroy();
+					}
+				}
+				?>
+				<li>
+					<a href="#birdinfo_<?php echo md5($bird); ?>" class="fancybox">
+						<?php echo htmlspecialchars($bird->label()); ?>
+						<?php if (!$imageurl->isNull()) { ?>
+							<br>
+							<img src="cache/thumbnails/<?php echo md5($imageurl); ?>.jpg" alt="<?php echo htmlspecialchars($bird->label()); ?>">
+						<?php } ?>
+					</a>
+				</li>
+			<?php } ?>
+			</ul>
+			<?php
+		}
+		?>
+		<dt>Birds common in current conditions</dt>
+		<dd>
+			<p class="hint">These birds are resident in the <?php echo $currentlevel; ?>-tide conditions currently found in the area</p>
+			<?php birdlist($currentbirds); ?>
+		</dd>
+		<?php if (!is_null($higherbirds)) { ?>
+			<dt>Birds you may additionally see if the tide gets higher</dt>
+			<dd>
+				<p class="hint">These additional birds may appear if the tide level increases</p>
+				<?php birdlist($higherbirds); ?>
+			</dd>
+		<?php } ?>
+		<?php if (!is_null($lowerbirds)) { ?>
+			<dt>Birds you may additionally see if the tide gets lower</dt>
+			<dd>
+				<p class="hint">These additional birds may appear if the tide level decreases</p>
+				<?php birdlist($lowerbirds); ?>
+			</dd>
+		<?php } ?>
+	</dl>
+</div>
+<div class="hidden" id="birdinfo">
+	<?php foreach ($allbirds as $bird) { ?>
+		<div id="birdinfo_<?php echo md5($bird); ?>">
+			<h2>
+				<?php echo htmlspecialchars($bird->label()); ?>
+				<a class="uri" href="<?php echo $bird; ?>"></a>
+			</h2>
+			<?php if (!$bird->get("foaf:depiction")->isNull()) { ?>
+				<div>
+					<img src="<?php echo htmlspecialchars($bird->get("foaf:depiction")); ?>">
+				</div>
+			<?php } ?>
+			<?php if ($bird->get("dct:description")->nodeType() == "#literal") { ?>
+				<p><?php echo $bird->get("dct:description"); ?></p>
+			<?php } ?>
+			<h3>Links</h3>
+			<ul>
+				<li><a href="<?php echo $bird; ?>"><?php echo htmlspecialchars($bird->label()); ?> at BBC Nature</a></li>
+				<li><a href="<?php echo $bird->get("owl:sameAs"); ?>"><?php echo htmlspecialchars($bird->label()); ?> at DBPedia</a></li>
+			</ul>
+		</div>
+	<?php } ?>
+</div>
+<div class="contentarea">
+	<h2>Nearby amenities</h2>
+
+	<dl class="single">
+		<dt><?php echo count($pubbar); ?> pubs/bars</dt>
+		<dd><?php amenitylist($pubbar); ?></dd>
+
+		<dt><?php echo count($cafe); ?> cafés</dt>
+		<dd><?php amenitylist($cafe); ?></dd>
+
+		<dt><?php echo count($restaurant); ?> restaurants/fast food/barbecues/bakeries</dt>
+		<dd><?php amenitylist($restaurant); ?></dd>
+
+		<dt><?php echo count($shop); ?> food/drink shops</dt>
+		<dd><?php amenitylist($shop); ?></dd>
+
+		<dt><?php echo count($parking); ?> places to park</dt>
+		<dd><?php amenitylist($parking); ?></dd>
+	</dl>
+</div>
 </div>
 </body>
 </html>
