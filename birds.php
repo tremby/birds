@@ -211,7 +211,7 @@ foreach (file("http://apps.semsorgrid.ecs.soton.ac.uk/tide/") as $line) {
 }
 
 // current time
-$now = strtotime("2011-01-02 19:48"); //TODO: replace this with current time
+$now = strtotime("2011-01-02 11:45"); //TODO: replace this with current time
 
 // current height
 $currentheight = $tideobservations[count($tideobservations) - 1];
