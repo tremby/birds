@@ -560,10 +560,9 @@ function addmissingprefixes($query) {
 		a {
 			color: #aca;
 			text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.5);
-			text-decoration: none;
 		}
 		a:hover {
-			text-decoration: underline;
+			color: #dfd;
 		}
 		.expandlink, .collapselink {
 			padding-left: 16px;
