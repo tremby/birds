@@ -206,12 +206,12 @@ $offset = null;//TODO: remove!
 foreach (file("http://apps.semsorgrid.ecs.soton.ac.uk/tide/") as $line) {
 	list($time, $height) = explode("\t", $line);
 	if (is_null($offset))
-		$offset = $time - strtotime("2011-01-02");//TODO: remove!
+		$offset = $time - strtotime("2011-02-15");//TODO: remove!
 	$predicted[] = array(($time - $offset), trim($height));//TODO: remove offset!
 }
 
 // current time
-$now = strtotime("2011-01-02 11:45"); //TODO: replace this with current time
+$now = strtotime("2011-02-15 11:45"); //TODO: replace this with current time
 
 // current height
 $currentheight = $tideobservations[count($tideobservations) - 1];
