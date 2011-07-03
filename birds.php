@@ -659,13 +659,13 @@ function addmissingprefixes($query) {
 				// make thumbnail for bird if we haven't already
 				$imageurl = $bird->get("foaf:depiction");
 				if (!$imageurl->isNull()) {
-					if (!file_exists("/tmp/mashupcache/thumbnails/" . md5($imageurl) . ".jpg")) {
+					if (!file_exists("thumbnails/" . md5($imageurl) . ".jpg")) {
 						$img = new Imagick();
 						$file = fopen((string) $imageurl, "rb");
 						$img->readImageFile($file);
 						fclose($file);
 						$img->resizeImage(0, 96, Imagick::FILTER_LANCZOS, 1);
-						$img->writeImage("/tmp/mashupcache/thumbnails/" . md5($imageurl) . ".jpg");
+						$img->writeImage("thumbnails/" . md5($imageurl) . ".jpg");
 						$img->destroy();
 					}
 				}
@@ -675,7 +675,7 @@ function addmissingprefixes($query) {
 						<?php echo htmlspecialchars($bird->label()); ?>
 						<?php if (!$imageurl->isNull()) { ?>
 							<br>
-							<img src="/tmp/mashupcache/thumbnails/<?php echo md5($imageurl); ?>.jpg" alt="<?php echo htmlspecialchars($bird->label()); ?>">
+							<img src="thumbnails/<?php echo md5($imageurl); ?>.jpg" alt="<?php echo htmlspecialchars($bird->label()); ?>">
 						<?php } ?>
 					</a>
 				</li>
