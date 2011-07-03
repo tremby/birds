@@ -457,6 +457,7 @@ function addmissingprefixes($query) {
 <!DOCTYPE HTML>
 <html>
 <head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 	<title>Birdwatching mashup</title>
 	<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.6.1/jquery.min.js"></script>
 	<script type="text/javascript" src="flot/jquery.flot.min.js"></script>
