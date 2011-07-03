@@ -39,7 +39,7 @@ $ns = array(
 
 define("ENDPOINT_LINKEDGEODATA", "http://linkedgeodata.org/sparql/");
 
-$cachedir = "cache/graphite";
+$cachedir = "/tmp/mashupcache/graphite";
 
 $graph = new Graphite($ns);
 if (!is_dir($cachedir))
@@ -354,7 +354,7 @@ function sortbythirdelement($a, $b) {
 // type is passed straight through to Arc
 // missing prefixes are added
 function sparqlquery($endpoint, $query, $type = "rows", $maxage = 86400/*1 day*/) {
-	$cachedir = "cache/sparql/" . md5($endpoint);
+	$cachedir = "/tmp/mashupcache/sparql/" . md5($endpoint);
 
 	if (!is_dir($cachedir))
 		mkdir($cachedir) or die("couldn't make cache directory");
@@ -659,13 +659,13 @@ function addmissingprefixes($query) {
 				// make thumbnail for bird if we haven't already
 				$imageurl = $bird->get("foaf:depiction");
 				if (!$imageurl->isNull()) {
-					if (!file_exists("cache/thumbnails/" . md5($imageurl) . ".jpg")) {
+					if (!file_exists("/tmp/mashupcache/thumbnails/" . md5($imageurl) . ".jpg")) {
 						$img = new Imagick();
 						$file = fopen((string) $imageurl, "rb");
 						$img->readImageFile($file);
 						fclose($file);
 						$img->resizeImage(0, 96, Imagick::FILTER_LANCZOS, 1);
-						$img->writeImage("cache/thumbnails/" . md5($imageurl) . ".jpg");
+						$img->writeImage("/tmp/mashupcache/thumbnails/" . md5($imageurl) . ".jpg");
 						$img->destroy();
 					}
 				}
@@ -675,7 +675,7 @@ function addmissingprefixes($query) {
 						<?php echo htmlspecialchars($bird->label()); ?>
 						<?php if (!$imageurl->isNull()) { ?>
 							<br>
-							<img src="cache/thumbnails/<?php echo md5($imageurl); ?>.jpg" alt="<?php echo htmlspecialchars($bird->label()); ?>">
+							<img src="/tmp/mashupcache/thumbnails/<?php echo md5($imageurl); ?>.jpg" alt="<?php echo htmlspecialchars($bird->label()); ?>">
 						<?php } ?>
 					</a>
 				</li>
