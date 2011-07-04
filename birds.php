@@ -43,25 +43,8 @@ $cachedir = "/tmp/mashupcache/graphite";
 
 $graph = new Graphite($ns);
 if (!is_dir($cachedir))
-	mkdir($cachedir);
+	mkdir($cachedir, 0777, true);
 $graph->cacheDir($cachedir);
-
-$graph->load("http://www.bbc.co.uk/nature/life/Bird");
-$graph->load("wo:");
-
-foreach ($graph->allOfType("wo:Order") as $order)
-	$order->load();
-foreach ($graph->allOfType("wo:Family") as $family)
-	$family->load();
-foreach ($graph->allOfType("wo:Genus") as $genus)
-	$genus->load();
-foreach ($graph->allOfType("wo:Species") as $species)
-	$species->load();
-
-foreach ($graph->allOfType("owl:Class") as $class) {
-	if ($class->isType("wo:Habitat"))
-		echo $graph->shrinkURI($habitat) . " -- " . $habitat->label() . "<br>\n";
-}
 
 $whitelist = array(
 	//"resident" => array(
@@ -120,40 +103,19 @@ $whitelist = array(
 		//),
 	//),
 );
+foreach ($whitelist as $species)
+	$species->load();
 
-$habitats = array(
-	"marsh" => $graph->resource("bbc:nature/habitats/Marsh#habitat"),
-	"coast" => $graph->resource("bbc:nature/habitats/Coast#habitat"),
-	"estuary" => $graph->resource("bbc:nature/habitats/Estuary#habitat"),
-	"intertidal_zone" => $graph->resource("bbc:nature/habitats/Intertidal_zone#habitat"),
-	"lake" => $graph->resource("bbc:nature/habitats/Lake#habitat"),
-	"river" => $graph->resource("bbc:nature/habitats/River#habitat"),
-	"wetland" => $graph->resource("bbc:nature/habitats/Wetland#habitat"),
-	"flooded_grasslands_and_savannas" => $graph->resource("bbc:nature/habitats/Flooded_grasslands_and_savannas#habitat"),
-	"swamp" => $graph->resource("bbc:nature/habitats/Swamp#habitat"),
-	"bog" => $graph->resource("bbc:nature/habitats/Bog#habitat"),
-);
-
-foreach ($habitats as $habitat)
-	$habitat->load();
-
-function getbirds($habitats) {
+function getbirds($habitat) {
 	global $graph;
 
-	if (!is_array($habitats))
-		$habitats = array($habitats);
-
 	$birds = array();
-	foreach ($habitats as $habitat) {
-		foreach ($graph->allOfType("wo:Species") as $species) {
-			foreach ($species->all("wo:livesIn") as $livesin) {
-				if ($livesin->uri == $habitat->uri) {
-					$birds[] = $species;
-					break;
-				}
+	foreach ($graph->allOfType("wo:Species") as $species)
+		foreach ($species->all("wo:livesIn") as $livesin)
+			if ($livesin == $habitat) {
+				$birds[] = $species;
+				break;
 			}
-		}
-	}
 
 	$birds = new Graphite_ResourceList($graph, $birds);
 	$birds = $birds->distinct();
@@ -161,20 +123,20 @@ function getbirds($habitats) {
 }
 
 // load tide sensor linked data
-$triples = $graph->load("http://id.semsorgrid.ecs.soton.ac.uk/observations/cco/lymington_tide/TideHeight/latest");
-if ($triples < 1)
+$tideobservationsURI = "id-semsorgrid:observations/cco/lymington_tide/TideHeight/latest";
+$triples = $graph->load($tideobservationsURI);
+if ($triples == 0)
 	die("failed to load any triples from '$tideobservationsURI'");
 
-// get tide sensor URI
-$sensor = $graph->allOfType("ssn:Observation")->get("ssn:observedBy")->distinct()->current();
+// get sensor
+$sensor = $graph->allOfType("ssn:Observation")->get("ssn:observedBy")->current();
 if ($sensor->isNull())
 	die("no observations");
-$sensorURI = $sensor->uri;
+if ($sensor->load() == 0)
+	die("couldn't load sensor RDF");
 
 // get sensor coordinates
-if ($graph->load($sensorURI) == 0)
-	die("couldn't load sensor RDF");
-$location = $graph->resource($sensorURI)->get("ssn:hasDeployment")->get("ssn:deployedOnPlatform")->get("sw:hasLocation");
+$location = $sensor->get("ssn:hasDeployment")->get("ssn:deployedOnPlatform")->get("sw:hasLocation");
 if ($location->isNull())
 	die("couldn't get sensor coordinates");
 $coords = array(
@@ -185,11 +147,16 @@ $coords = array(
 // collect times and heights
 $tideobservations = array();
 foreach ($graph->allOfType("ssn:Observation") as $observationNode) {
+	// skip observations which are not of the tide height
 	if ($observationNode->get("ssn:observedProperty") != "http://www.semsorgrid4env.eu/ontologies/CoastalDefences.owl#TideHeight")
 		continue;
+
+	// ensure the time node is a type we can understand
 	$timeNode = $observationNode->get("ssn:observationResultTime");
 	if (!$timeNode->isType("time:Interval"))
 		continue;
+
+	// add a (time, reading) pair to the array of observations
 	$tideobservations[] = array(strtotime($timeNode->get("time:hasBeginning")),
 		floatVal((string) $observationNode->get("ssn:observationResult")->get("ssn:hasValue")->get("ssne:hasQuantityValue")));
 }
@@ -221,22 +188,34 @@ $currentheight = $currentheight[1];
 $highthreshold = 4.23;
 $lowthreshold = 1.21;
 
-$wetlandbirds = getbirds($habitats["wetland"]);
-$marshbirds = getbirds($habitats["marsh"]);
-$swampbirds = getbirds($habitats["swamp"]);
-$bogbirds = getbirds($habitats["bog"]);
+//$habitats = array(
+//	"marsh" => $graph->resource("bbc:nature/habitats/Marsh#habitat"),
+//	"coast" => $graph->resource("bbc:nature/habitats/Coast#habitat"),
+//	"estuary" => $graph->resource("bbc:nature/habitats/Estuary#habitat"),
+//	"intertidal_zone" => $graph->resource("bbc:nature/habitats/Intertidal_zone#habitat"),
+//	"lake" => $graph->resource("bbc:nature/habitats/Lake#habitat"),
+//	"river" => $graph->resource("bbc:nature/habitats/River#habitat"),
+//	"wetland" => $graph->resource("bbc:nature/habitats/Wetland#habitat"),
+//	"flooded_grasslands_and_savannas" => $graph->resource("bbc:nature/habitats/Flooded_grasslands_and_savannas#habitat"),
+//	"swamp" => $graph->resource("bbc:nature/habitats/Swamp#habitat"),
+//	"bog" => $graph->resource("bbc:nature/habitats/Bog#habitat"),
+//);
+
+$wetlandbirds = getbirds($graph->resource("bbc:nature/habitats/Wetland#habitat"));
+$marshbirds = getbirds($graph->resource("bbc:nature/habitats/Marsh#habitat"));
+$swampbirds = getbirds($graph->resource("bbc:nature/habitats/Swamp#habitat"));
+$bogbirds = getbirds($graph->resource("bbc:nature/habitats/Bog#habitat"));
 
 $lowbirds = $wetlandbirds->intersection($whitelist);
 $midbirds = $marshbirds->intersection($whitelist);
-$highbirds = $marshbirds->union($swampbirds)->union($bogbirds)->intersection($whitelist);
+$highbirds = $marshbirds->union($swampbirds)->union($bogbirds)->intersection($whitelist)->distinct();
 
-$allbirds = $lowbirds->union($midbirds)->union($highbirds);
-$alwaysbirds = $lowbirds->intersection($midbirds)->intersection($highbirds);
+$allbirds = $lowbirds->union($midbirds)->union($highbirds)->distinct();
 
 if ($currentheight < $lowthreshold) {
 	$currentlevel = "low";
 	$currentbirds = $lowbirds;
-	$higherbirds = $midbirds->union($highbirds)->except($currentbirds);
+	$higherbirds = $midbirds->union($highbirds)->except($currentbirds)->distinct();
 	$lowerbirds = null;
 } else if ($currentheight < $highthreshold) {
 	$currentlevel = "mid";
@@ -247,7 +226,7 @@ if ($currentheight < $lowthreshold) {
 	$currentlevel = "high";
 	$currentbirds = $highbirds;
 	$higherbirds = null;
-	$lowerbirds = $lowbirds->union($midbirds)->except($currentbirds);
+	$lowerbirds = $lowbirds->union($midbirds)->except($currentbirds)->distinct();
 }
 
 $types_pub = array(
