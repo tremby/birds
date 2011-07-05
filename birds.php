@@ -336,7 +336,7 @@ function sparqlquery($endpoint, $query, $type = "rows", $maxage = 86400/*1 day*/
 	$cachedir = "/tmp/mashupcache/sparql/" . md5($endpoint);
 
 	if (!is_dir($cachedir))
-		mkdir($cachedir) or die("couldn't make cache directory");
+		mkdir($cachedir, 0777, true) or die("couldn't make cache directory");
 
 	$query = addmissingprefixes($query);
 
