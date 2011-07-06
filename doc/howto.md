@@ -36,6 +36,9 @@ Another useful tool is an RDF browser such as the [Q&D RDF Browser][qdbrowser].
 [jquery]: http://jquery.com/
 [qdbrowser]: http://graphite.ecs.soton.ac.uk/browser/
 
+Setting up the graph
+--------------------
+
 First we define some namespaces, load in the Arc2 and Graphite libraries and set 
 up a new Graphite graph and tell it to use our namespaces.
 
@@ -51,13 +54,13 @@ up a new Graphite graph and tell it to use our namespaces.
 		// ...more namespaces
 	);
 	require_once "arc/ARC2.php";
-	require_once "Graphite.php";
+	require_once "Graphite/graphite/Graphite.php";
 	$graph = new Graphite($ns);
 
 It's also useful to tell Graphite to cache the RDF files it downloads:
 
 	$cachedir = "/tmp/mashupcache/graphite";
-	if (is_dir($cachedir))
+	if (!is_dir($cachedir))
 		mkdir($cachedir, 0777, true)
 	$graph->cacheDir($cachedir);
 
@@ -69,16 +72,23 @@ sensor. Since we know how our HLAPI is configured, we know the REST service URI
 for its latest tide height data and so can load the data into our graph 
 directly.
 
-	if ($graph->load("id-semsorgrid:observations/cco/lymington_tide/TideHeight/latest") == 0)
+	$tideobservationsURI = "id-semsorgrid:observations/cco/lymington_tide/TideHeight/latest";
+	if ($graph->load($tideobservationsURI) == 0)
 		die("failed to load any triples from '$tideobservationsURI'");
 
-In order to explore the data available it is often useful to have Graphite dump 
-the graph's contents as HTML.
+This directs Graphite to load the resources into a graph -- Graphite and the 
+HLAPI will automatically negotiate a content type which can be used. We're using 
+the namespace we defined above for brevity.
+
+Graphite allows the graph to be rendered directly as HTML to quickly visualize 
+what is available, the same can be achieved by using a dedicated RDF browser.
 
 	echo $graph->dump();
 
 From inspection of the result the links to use to get from one URI to another 
-can be found. So to get the sensor's coordinates:
+can be found. To load the sensor's document into the graph (and so get 
+information about the sensor) we find any `ssn:Observation` resource's 
+`ssn:observedBy` property -- that's the sensor -- and load it.
 
 	// get sensor
 	$sensor = $graph->allOfType("ssn:Observation")->get("ssn:observedBy")->current();
@@ -86,6 +96,9 @@ can be found. So to get the sensor's coordinates:
 		die("no observations");
 	if ($sensor->load() == 0)
 		die("couldn't load sensor RDF");
+
+From there we can get the sensor's coordinates (again, inspecting the graph with 
+the `dump` method is useful for determining the links to use):
 
 	// get sensor coordinates
 	$location = $sensor->get("ssn:hasDeployment")->get("ssn:deployedOnPlatform")->get("sw:hasLocation");
@@ -224,108 +237,32 @@ looks something like the following:
 		$lowerbirds = $lowbirds->union($midbirds)->except($currentbirds)->distinct();
 	}
 
-Getting linked data on nearby amenities from LinkedGeodata
+Getting linked data on nearby amenities from Linked Geodata
 ----------------------------------------------------------
 
-We will use LinkedGeodata's Sparql endpoint to get information on amenities 
-close to the tide height sensor. By browsing LinkedGeodata we can build a list 
-of suitable amenity types, such as
+We will use Linked Geodata's Sparql endpoint to get information on amenities 
+close to the tide height sensor. By browsing Linked Geodata we can build a list 
+of suitable amenity types, and then put together and send a query:
 
-	$types_cafe = array(
-		"lgdo:CoffeeShop",
-		"lgdo:Cafe",
-		"lgdo:InternetCafe",
-	);
-
-We can then define a function to take such a list and query LinkedGeodata for 
-amenities of any of those types close to a given set of coordinates.
-
-	function nearbyamenities($type, $latlon, $radius = 10) {
-		global $ns;
-
-		// upgrade $type to an array of itself if an array wasn't given
-		if (!is_array($type))
-			$type = array($type);
-
-		// execute query
-		$rows = sparqlquery("http://linkedgeodata.org/sparql/", "
-			SELECT *
-			WHERE {
-				{ ?place a " . implode(" . } UNION { ?place a ", $type) . " . }
-				?place
-					a ?type ;
-					geo:geometry ?placegeo ;
-					rdfs:label ?placename .
-				FILTER(<bif:st_intersects> (?placegeo, <bif:st_point> ($latlon[1], $latlon[0]), $radius)) .
-			}
-		");
-
-		// collect results
-		$results = array();
-		foreach ($rows as $row) {
-			$coords = parsepointstring($row['placegeo']);
-			$results[$row["place"]] = array($row['placename'], $coords, distance($coords, $latlon));
+	$store = ARC2::getRemoteStore(array("remote_store_endpoint" => "http://linkedgeodata.org/sparql/"));
+	$rows = $store->query("
+		PREFIX lgdo: <http://linkedgeodata.org/ontology/>
+		PREFIX geo: <http://www.w3.org/2003/01/geo/wgs84_pos#>
+		PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+		SELECT * WHERE {
+			{ ?place a lgdo:CoffeeShop . }
+			UNION { ?place a lgdo:Cafe . }
+			UNION { ?place a lgdo:InternetCafe . }
+			?place
+				a ?type ;
+				geo:geometry ?placegeo ;
+				rdfs:label ?placename .
+			FILTER(<bif:st_intersects> (?placegeo, <bif:st_point> ($gate["lon"], $gate["lat"]), 5)) .
 		}
+	", "rows");
 
-		// sort according to ascending distance from centre
-		uasort($results, "sortbythirdelement");
-
-		return $results;
-	}
-
-This needs some supporting functions. Caching functionality has been stripped 
-from the `sparqlquery` function below for brevity.
-
-	// compare two arrays by their third elements (for sorting amenities by 
-	// distance)
-	function sortbythirdelement($a, $b) {
-		$diff = $a[2] - $b[2];
-		// usort needs integers rather than floats
-		return $diff < 0 ? -1 : ($diff > 0 ? 1 : 0);
-	}
-
-	// cast a location string returned by LinkedGeodata into a coordinates array
-	function parsepointstring($string) {
-		$coords = array_map("floatVal", explode(" ", preg_replace('%^.*\((.*)\)$%', '\1', $string)));
-		return array_reverse($coords);
-	}
-
-	// return the distance in km between two array(lat, lon)
-	function distance($latlon1, $latlon2) {
-		$angle = acos(sin(deg2rad($latlon1[0])) * sin(deg2rad($latlon2[0])) + cos(deg2rad($latlon1[0])) * cos(deg2rad($latlon2[0])) * cos(deg2rad($latlon1[1] - $latlon2[1])));
-		$earthradius_km = 6372.8;
-		return $earthradius_km * $angle;
-	}
-
-	// query a Sparql endpoint
-	function sparqlquery($endpoint, $query, $type = "rows") {
-		global $ns;
-
-		// prepend namespaces to the query
-		foreach ($ns as $short => $long)
-			$query = "PREFIX $short: <$long>\n" . $query;
-
-		// set up the endpoint
-		$config = array(
-			"remote_store_endpoint" => $endpoint,
-			"ns" => $ns,
-		);
-		$store = ARC2::getRemoteStore($config);
-
-		// query the endpoint
-		$result = $store->query($query, $type);
-		if (!empty($store->errors)) {
-			foreach ($store->errors as $error)
-				trigger_error("Sparql error: " . $error, E_USER_WARNING);
-			return null;
-		}
-
-		return $result;
-	}
-
-We can now finally use the `nearbyamenities` function as in the following call:
-
-	$pubbar = nearbyamenities($types_pub, $coords, 3);
+The returned results include the coordinates of each matching amenity 
+(`placegeo`), from which the distance to our area of interest can be calculated.
 
 Presenting the data
 -------------------

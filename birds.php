@@ -124,8 +124,7 @@ function getbirds($habitat) {
 
 // load tide sensor linked data
 $tideobservationsURI = "id-semsorgrid:observations/cco/lymington_tide/TideHeight/latest";
-$triples = $graph->load($tideobservationsURI);
-if ($triples == 0)
+if ($graph->load($tideobservationsURI) == 0)
 	die("failed to load any triples from '$tideobservationsURI'");
 
 // get sensor
